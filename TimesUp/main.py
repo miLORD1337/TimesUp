@@ -228,6 +228,7 @@ Have fun!
         self.painter.drawText(QRectF(self.showncard), text, options)
         self.painter.setPen(QPen(QColor('#000000')))
 
-App = QApplication(sys.argv)
-window = Window()
-sys.exit(App.exec())
+if __name__ == "__main__":
+    App = QApplication(sys.argv)
+    window = Window()
+    sys.exit(App.exec())
