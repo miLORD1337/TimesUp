@@ -5,6 +5,10 @@ import sys
 import os
 import random
 import codecs
+from requests import Session
+import json
+from threading import Thread
+import time
 
 class Window(QMainWindow):
     keyPressed = pyqtSignal(int)
@@ -28,59 +32,88 @@ class Window(QMainWindow):
         img = QImage("card.png")
         self.pic = QPixmap(img)
 
-        self.timer = QTimer()
+        self.turnTimer = QTimer()
 
-        self.dir = 'files'
-        self.playertime = 60
+        self.playername = 'Tästname'
 
-        self.roundtypes = {1:'Explain', 2:'One word only', 3:'Sound only', 4:'Pantomime'}
+        self.roundtypes = {0:'Lobby', 1:'Explain', 2:'One word only', 3:'Sound only', 4:'Pantomime'}
         self.n_rounds = len(self.roundtypes)
 
-        # Collect players
-        self.files = [f for f in os.listdir(self.dir) if f.endswith('.txt')]
-        self.playernames = [os.path.splitext(obj)[0] for obj in self.files]
-        random.shuffle(self.playernames)
-        self.playernames.append(self.playernames[0]) # Dirty Trick for easy next player
-        self.n_players = len(self.files)
-
-        # Collect words
-        self.words = []
-        for f in self.files:
-            with codecs.open(os.path.join(self.dir,f), 'r', 'utf-8') as file:
-                [self.words.append(line.rstrip('\n')) for line in file]
-        random.shuffle(self.words)
-        self.n_words = len(self.words)
-
         # Initial Values
-        self.round = 1
-        self.player = 1
-        self.word = 1
+        self.words = []
+        self.n_words = []
+        self.playernames = []
+        self.duration = 60
+        self.turntime = 0
+        self.round = 0
         self.step = 0
-        self.secs = self.playertime
+        self.word = 0
+        self.player = 0
+        self.n_players = 0
         self.timeexceeded = False
+        self.setup()
+
+        self.testing()
 
         # Triggers
+        self.turnTimer.timeout.connect(self.count)
         self.keyPressed.connect(self.advanceStep)
-        self.timer.timeout.connect(self.count)
+        
+        # Threads
+        thread = Thread(target=self.updateGameState, daemon=True)
+        thread.start()
 
         # All ready
         self.InitWindow()
-        self.advanceStep()
-        
-    def advanceStep(self):
-        self.step += 1
-        if self.step > 4: # Card tucked away, times up!
-            self.step = 1
-            self.player += 1
-            self.word += 1
-        if self.player > self.n_players: self.player = 1
-        if self.word > self.n_words: 
-            self.word = 1
-            self.round += 1
-            random.shuffle(self.words)
-        if self.round > self.n_rounds: self.close()
+
+    def setup(self):
+        self.server = Session()
+        self.url = 'http://localhost/server.php'
+        self.server.post(self.url, {'SetDuration': self.duration})
+        self.server.post(self.url, {'NewPlayer': self.playername})
+
+    def testing(self):
+        self.server.post(self.url, {'SetDuration': 6})
+        self.server.post(self.url, {'NewPlayer': 'Player2'})
+        for i in range(20):
+            self.addWord('Word{}'.format(i))
+
+    def updateGameState(self):
+        while True:
+            try:
+                #print(self.server.get(self.url).text)
+                gamestate = json.loads(self.server.get(self.url).text)
+                if 'words' in gamestate: 
+                    self.words = gamestate['words']
+                    self.n_words = len(self.words)
+                if 'players' in gamestate: 
+                    self.playernames = gamestate['players']
+                    self.n_players = len(self.playernames)
+                if 'round' in gamestate: self.round = gamestate['round']
+                if 'step' in gamestate: self.step = gamestate['step']
+                if 'word' in gamestate: self.word = gamestate['word']
+                if 'player' in gamestate: self.player = gamestate['player']
+                if 'turnTime' in gamestate: self.turntime = gamestate['turnTime']
+                if 'turnTimeExceeded' in gamestate: self.timeexceeded = gamestate['turnTimeExceeded']
+                if 'duration' in gamestate: self.duration = gamestate['duration']
+                print(gamestate)
+            except:
+                print('Error encounted while updating.')
+            self.update()
+            time.sleep(0.5)
+
+    def addWord(self, word):
+        self.server.post(self.url, {'NewWord': word})
         self.update()
 
+    def addPlayer(self, player):
+        self.server.post(self.url, {'NewPlayer': player})
+        self.update()
+        
+    def advanceStep(self):
+        self.secs = self.duration
+        self.server.post(self.url, {'AdvanceStep': 0})
+        self.update()
 
     def InitWindow(self):
         self.setWindowTitle(self.title)
@@ -141,41 +174,27 @@ Have fun!
         self.showncard =  self.centered.translated(0, offset)
 
         self.drawBg()
-        self.drawStack()
+        if not self.round == 0: self.drawStack()
 
         if self.step == 1: # Look away!
             self.timeexceeded = False
         elif self.step == 2: # Card shown
             self.drawCard(self.words[self.word-1])
         elif self.step == 3: # Card tucked away, time running
-            self.timer.start(1000)
+            if not self.turnTimer.isActive(): self.turnTimer.start()
             self.drawTucked()
             self.drawTime()
         elif self.step == 4: # Show card to everyone
-            if self.timeexceeded:
-                self.drawCard(self.words[self.word-1], '#be1e3c')
-            else:
-                self.drawCard(self.words[self.word-1], '#0fcb01')
-            self.secs = self.playertime
-            self.timer.stop()
+            self.turnTimer.stop()
+            col = '#0fcb01'
+            if self.timeexceeded: col = '#be1e3c'
+            self.drawCard(self.words[self.word-1], col)
         else: # Default
             self.timeexceeded = False
-            self.secs = self.playertime
-            self.timer.stop()
 
         self.drawHUD()
 
         self.painter.end()
-
-    def count(self):
-        self.secs -= 1
-        self.update()
-        if self.secs == 0:
-            self.timeexceeded = True
-            self.secs = self.playertime
-            self.advanceStep()
-        else:
-            self.timer.start(1000)
 
     def drawBg(self):
         self.painter.drawPixmap(self.rect(), self.bgpic)
@@ -186,10 +205,21 @@ Have fun!
         options = QTextOption()
         options.setWrapMode(QTextOption.WordWrap)
         self.painter.setFont(font)
-        self.painter.drawText(QRectF(20, 30, 400, 300), 
-            'Round {}, {}\n{} ➞ {}\n\n\n\nWord {}/{}'.format(
-            self.round, self.roundtypes[self.round], self.playernames[self.player-1],
-            self.playernames[self.player], self.word, self.n_words), options)
+        # Lobby
+        if self.round == 0:
+            self.painter.drawText(QRectF(20, 30, 400, 300), 'Lobby\nPlayers: {}'.format(self.n_players))
+            txt = ''
+            for player in self.playernames:
+                txt = '\n'.join([txt, player])
+            self.painter.drawText(QRectF(20, 30, 400, 300), '\n\n{}'.format(txt))
+        # In game
+        else:
+            self.painter.drawText(QRectF(20, 30, 400, 300), 
+                'Round {}, {}\n{} ➞ {}'.format(
+                self.round, self.roundtypes[self.round], self.playernames[self.player-1],
+                self.playernames[self.player]), options)
+            self.painter.drawText(QRectF(20, 30, 400, 300), 
+                '\n\n\n\n\nWord {}/{}'.format(self.word, self.n_words), options)
 
     def drawTime(self):
         font = QFont()
@@ -197,7 +227,18 @@ Have fun!
         options = QTextOption()
         options.setWrapMode(QTextOption.WordWrap)
         self.painter.setFont(font)
-        self.painter.drawText(QRectF(20, 300, 400, 300), '{}/{} seconds left'.format(self.secs, self.playertime), options)
+        drawtime = self.secs
+        if drawtime > self.secs: drawtime = self.secs
+        if drawtime < 0: drawtime = 0
+        self.painter.drawText(QRectF(20, 300, 400, 300), '{}/{} seconds left'.format(drawtime, self.duration), options)
+
+    def count(self):
+        self.update()
+        self.secs -= 1
+        if self.secs == 0:
+            pass
+        else:
+            self.turnTimer.start(1000)
 
     def drawStack(self):
         for i in range(10):
